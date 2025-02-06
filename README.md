@@ -9,4 +9,4 @@ python ExtractURLsMedSky.py
 ```
 
 ## Result
-creates a file called extracted_fields_medsky.csv
+creates a file called extracted_fields_medsky.csv in the current directory.
