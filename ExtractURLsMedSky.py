@@ -3,7 +3,12 @@ import csv
 from atproto import Client, models
 
 def save_extracted_fields_to_csv(threads, output_file):
-    """Extract and save fields to a CSV file, appending if the file exists."""
+    """Extract and save fields to a CSV file, appending if the file exists.
+    
+    Args:
+        threads: List of threads, where each thread contains posts with content and metadata
+        output_file: Path to CSV file where data will be saved
+    """
     file_exists = os.path.isfile(output_file)
     with open(output_file, 'a', newline='') as csvfile:
         writer = csv.writer(csvfile)
@@ -13,7 +18,7 @@ def save_extracted_fields_to_csv(threads, output_file):
 
         for thread in threads:
             for post in thread:
-                # Extract the desired substring
+                # Extract text before the arrow symbol (->) as it contains the relevant content
                 content = post['content']
                 if "->" in content:
                     extracted = content.split('->')[0].strip()
@@ -22,8 +27,17 @@ def save_extracted_fields_to_csv(threads, output_file):
 
 
 def fetch_parent_post_links(profile_url, did, profile_handle, client):
-    """Fetch links to parent posts containing the word 'thread'."""
-    # Fetch posts from the author's feed
+    """Fetch links to parent posts containing the word 'thread'.
+    
+    Args:
+        profile_url: URL of the Bluesky profile to fetch posts from
+        did: Decentralized identifier of the profile
+        profile_handle: Handle of the profile (e.g. 'medsky.social')
+        client: Authenticated Bluesky API client
+        
+    Returns:
+        List of URLs to parent posts that contain 'thread' in their content
+    """
     parent_post_links = []
     cursor = None
     while True:
@@ -31,8 +45,7 @@ def fetch_parent_post_links(profile_url, did, profile_handle, client):
         response = client.app.bsky.feed.get_author_feed(feed_params)
         feed = response.feed
 
-        # Filter posts containing the word 'thread'.
-        # Note that this is not a fool proof way / specific for the medsky labeler
+        # Filter posts containing the word 'thread' to find parent posts of labeling threads
         for item in feed:
             content = getattr(item.post.record, "text", "")
             if "thread" in content.lower():
@@ -40,7 +53,7 @@ def fetch_parent_post_links(profile_url, did, profile_handle, client):
                 post_id = uri_parts[-1]
                 parent_post_links.append(f"https://bsky.app/profile/{profile_handle}/post/{post_id}")
 
-        # Handle pagination
+        # Handle pagination - break if no more pages
         cursor = response.cursor
         if not cursor:
             break
@@ -48,8 +61,17 @@ def fetch_parent_post_links(profile_url, did, profile_handle, client):
     return parent_post_links
 
 
-# Recursive function to fetch replies iteratively
 def process_post(uri, client, depth=0):
+    """Recursively process a post and all its replies to extract content.
+    
+    Args:
+        uri: URI of the post to process
+        client: Authenticated Bluesky API client
+        depth: Current depth in the reply tree (for debugging)
+        
+    Returns:
+        List of dictionaries containing post content and metadata
+    """
     # Fetch a post by its URI
     post_params = models.AppBskyFeedGetPostThread.Params(uri=uri)
     response = client.app.bsky.feed.get_post_thread(post_params)
@@ -58,7 +80,7 @@ def process_post(uri, client, depth=0):
     if not thread or not hasattr(thread, "post"):
         return []
 
-    # Extract the main post content
+    # Extract the main post content and metadata
     post_content = {
         "author_handle": thread.post.author.handle,
         "author_did": thread.post.author.did,
@@ -67,24 +89,32 @@ def process_post(uri, client, depth=0):
     }
     result = [post_content]
 
-    # Process replies one by one
+    # Recursively process all replies in the thread
     if hasattr(thread, "replies") and thread.replies:
         for reply in thread.replies:
             reply_uri = reply.post.uri
             print(f"|--Processing uri {reply_uri}")
-            result.extend(process_post(reply_uri, client, depth + 1))  # Recursive call for each reply
+            result.extend(process_post(reply_uri, client, depth + 1))
 
     return result
     
 
 def fetch_post_content_and_replies_iteratively(post_url, did, client):
-    """Process a post and its replies, saving extracted data to a CSV."""
-
+    """Process a post and all its replies to extract content.
+    
+    Args:
+        post_url: URL of the post to process
+        did: Decentralized identifier of the post author
+        client: Authenticated Bluesky API client
+        
+    Returns:
+        List of all posts in the thread with their content and metadata
+    """
     # Extract profile handle and post ID from the post URL
     parts = post_url.split('/')
     post_id = parts[-1]
 
-    # Start processing from the main post
+    # Convert web URL to Bluesky URI format and process the thread
     main_post_uri = f"at://{did}/app.bsky.feed.post/{post_id}"
     all_posts = process_post(main_post_uri, client)
 
@@ -99,7 +129,7 @@ def main():
     profile_handle = 'medsky.social'
     client = Client()
 
-   # Retrieve password from the environment variable
+    # Retrieve authentication credentials from environment variables
     user = os.getenv("BSKY_USER")
     password = os.getenv("BSKY_PASSWORD")
     if not password:
@@ -107,24 +137,23 @@ def main():
 
     client.login(user, password)
 
+    # Resolve the DID (decentralized identifier) for the profile
     params = models.ComAtprotoIdentityResolveHandle.Params(handle=profile_handle)
     profile = client.com.atproto.identity.resolve_handle(params)
     did = profile.did
     print(f"Resolved DID for {profile_handle}: {did}")
 
-    # Fetch parent post links containing the word 'thread'
+    # Fetch parent posts that start labeling threads
     parent_post_links = fetch_parent_post_links(profile_url, did, profile_handle, client)
     print(f"Found parent posts: {parent_post_links}")
 
-    # Process each parent post link
+    # Process each parent post and its replies to extract labeled content
     threads = []
     for i, post_url in enumerate(parent_post_links):
         print(f"Processing parent post {i} / {len(parent_post_links)}: {post_url}")
         all_posts = fetch_post_content_and_replies_iteratively(post_url, did, client)
-        # Save extracted fields to CSV
         threads.append(all_posts)
     save_extracted_fields_to_csv(threads, output_file)
-
 
     print(f"Data saved to {output_file}")
 
